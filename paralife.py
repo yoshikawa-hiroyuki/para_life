@@ -172,6 +172,7 @@ def Serve():
     
 #-------------------------------------------------------------
 N = 32 #Size of grid for the game of life
+
 comm = MPI.COMM_WORLD
 mpi_size = comm.Get_size()
 
@@ -188,6 +189,7 @@ elif(mpi_size > 1):
 else:
     print("Running in serial mode.")
 
+np.set_printoptions(threshold=np.inf)
 
 game = Life(N) #Initialize the game with a grid of size N
 g_game = game
