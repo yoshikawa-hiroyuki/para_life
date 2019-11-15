@@ -1,5 +1,5 @@
 ########################################################################
-# paralife.py
+# GameOfLife.py
 # Description: A parallel implementation of Conway's Game of Life in Python.
 ########################################################################
 from sys import exit
@@ -171,50 +171,52 @@ def Serve():
 
     
 #-------------------------------------------------------------
-N = 32 #Size of grid for the game of life
+# MAIN
+if __name__ == '__main__':
+    N = 32 #Size of grid for the game of life
 
-comm = MPI.COMM_WORLD
-mpi_size = comm.Get_size()
+    comm = MPI.COMM_WORLD
+    mpi_size = comm.Get_size()
 
-# Figure out MPI division of tasks (how many rows per processor)
-rows_per_proc = N / mpi_size
-if(rows_per_proc != int(N*1.0 / mpi_size)):
-    if(comm.Get_rank() == 0):
-        print("Matrix size not evenly divisible by number of processors."
-              + " Use different values.")
-        exit()
-elif(mpi_size > 1):
-    if(comm.Get_rank() == 0):
-        print("Parallelizing with ",mpi_size," processors.")
-else:
-    print("Running in serial mode.")
-
-np.set_printoptions(threshold=np.inf)
-
-game = Life(N) #Initialize the game with a grid of size N
-g_game = game
-
-# Make proc 0 have the true matrix - send it to the others:
-game.grid = comm.bcast(game.grid, root=0)
-game.aug_grid = game.form_aug_grid(game.grid)
-rank = comm.Get_rank()
-
-# Start service
-if rank == 0:
-    t1 = threading.Thread(target=Serve)
-    t1.start()
-
-# Run simulation
-while True:
-    if mpi_size < 2:
-        game.update(game._generation)
+    # Figure out MPI division of tasks (how many rows per processor)
+    rows_per_proc = N / mpi_size
+    if(rows_per_proc != int(N*1.0 / mpi_size)):
+        if(comm.Get_rank() == 0):
+            print("Matrix size not evenly divisible by number of processors."
+                + " Use different values.")
+            exit()
+    elif(mpi_size > 1):
+        if(comm.Get_rank() == 0):
+            print("Parallelizing with ",mpi_size," processors.")
     else:
-        game.update_para_1d_dec_point_to_point(game._generation)
-    sleep(0.1)
-    
-    game.comm_stat()
-    if not game._go:
-        break
-    continue # end of while
+        print("Running in serial mode.")
 
-exit(0)
+    np.set_printoptions(threshold=np.inf)
+
+    game = Life(N) #Initialize the game with a grid of size N
+    g_game = game
+
+    # Make proc 0 have the true matrix - send it to the others:
+    game.grid = comm.bcast(game.grid, root=0)
+    game.aug_grid = game.form_aug_grid(game.grid)
+    rank = comm.Get_rank()
+
+    # Start service
+    if rank == 0:
+        t1 = threading.Thread(target=Serve)
+        t1.start()
+
+    # Run simulation
+    while True:
+        if mpi_size < 2:
+            game.update(game._generation)
+        else:
+            game.update_para_1d_dec_point_to_point(game._generation)
+        sleep(0.1)
+    
+        game.comm_stat()
+        if not game._go:
+            break
+        continue # end of while
+
+    exit(0)
