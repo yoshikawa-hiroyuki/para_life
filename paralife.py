@@ -2,16 +2,12 @@
 # paralife.py
 # Description: A parallel implementation of Conway's Game of Life in Python.
 ########################################################################
-
 from sys import exit
 from time import sleep
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 from mpi4py import MPI
 import threading
-from concurrent.futures import ThreadPoolExecutor
-
+import io
 from BKserver import BKserver
 
 g_game = None
@@ -46,7 +42,6 @@ class Life:
             #Set up all the ghost cells between the processes:
             self.comm_ghosts()
 
-        self.fig = plt.figure()
 
     '''Communicates the ghost cells between the processes'''
     def comm_ghosts(self):
@@ -71,12 +66,10 @@ class Life:
             self.proc_grid[:,self.cols_per_proc+1] = recv_buf_ary
 
     def comm_stat(self):
-        if(self.mpi_size > 1):
-            comm.bcast(self._go, root=0)
+        self._go = comm.bcast(self._go, root=0)
 
     def __str__(self):
         return str(self.grid)
-
 
     '''Forms an augmented grid'''
     def form_aug_grid(self,a):
@@ -115,12 +108,7 @@ class Life:
 
         self._generation = self._generation + 1
         self._numLife = np.count_nonzero(self.grid)
-        if not self._go:
-            plt.close()
-            return None
-        
-        plt.cla()        #Clear the plot so things draw much faster
-        return plt.imshow(self.grid, interpolation='nearest')
+        return self.grid
 
 
     '''Updates the matrix by splitting things into columns and then using
@@ -148,16 +136,10 @@ class Life:
         #For testing with the animation:
         self.reconstruct_full_sim()
 
-        self.comm_stat()
         self._generation = self._generation + 1
         nl = np.count_nonzero(self.grid)
         self._numLife = self.comm.reduce(nl, op=MPI.SUM, root=0)
-        if not self._go:
-            plt.close()
-            return None
-
-        plt.cla()        #Clear the plot so things draw much faster
-        return plt.imshow(self.grid, interpolation='nearest')
+        return self.grid
 
 
     '''Reconstructs the data for the full simulation on every processor for a
@@ -173,95 +155,21 @@ class Life:
                   = recv_buf_ary[proc]
         self.grid = comm.bcast(self.grid, root=0)
 
-
-    '''Updates the simulation using a 1d domain decomposition:
-    every process works on a group of rows determined by that processor's rank,
-    then the results are broadcast to all the other processes so that
-    each process has the entire updated simulation domain after each step'''
-    def update_para_1d_dec(self,i):
-        for row in range(N):
-            if(row % mpi_size == rank):
-                for col in range(N):
-                    if self.neighbor_sum(row,col) == 3:
-                        self.grid[row][col] = 1
-                    elif self.neighbor_sum(row,col) != 2:
-                        self.grid[row][col] = 0
-
-        for row in range(N):
-            self.grid[row] = comm.bcast(self.grid[row], root=row % mpi_size)
-
-        if(rank == 0):
-            self.aug_grid = self.form_aug_grid(self.grid)
-        self.aug_grid = comm.bcast(self.aug_grid,root=0)
-
-        plt.cla()        #Clear the plot so things draw much faster
-        return plt.imshow(self.grid, interpolation='nearest')
-
-
-    '''Updates the simulation using a 2d domain decomposition:
-    each process gets a rectangular (square?) patch to work on '''
-    def update_para_2d_dec(self,i):
-        for row in range(N):
-            if(row % mpi_size == rank):
-                for col in range(N):
-                    if self.neighbor_sum(row,col) == 3:
-                        self.grid[row][col] = 1
-                    elif self.neighbor_sum(row,col) != 2:
-                        self.grid[row][col] = 0
-
-        for row in range(N):
-            self.grid[row] = comm.bcast(self.grid[row], root=row % mpi_size)
-
-        if(rank == 0):
-            self.aug_grid = self.form_aug_grid(self.grid)
-        self.aug_grid = comm.bcast(self.aug_grid,root=0)
-
-        plt.cla()        #Clear the plot so things draw much faster
-        return plt.imshow(self.grid, interpolation='nearest')
-
-
-    '''Display one step of the simulation'''
-    def show(self):
-        plt.imshow(self.grid, interpolation='nearest')
-        plt.show()
-
-
-    '''Play a movie of the simulation'''
-    def movie(self):
-        self.anim = animation.FuncAnimation(self.fig, self.update, interval=100)
-        plt.show()
-
-
-    '''Play a movie of the simulation with parallelization.'''
-    def movie_para(self):
-        self.anim = animation.FuncAnimation(self.fig, self.update_para_1d_dec_point_to_point, interval=100)
-        plt.show()
-
     def stop(self):
         self._go = False
         return 'STOP'
 
-def Test():
-    while True:
-        x = input()
-        if x == 'stop':
-            g_game._go = False
-            break
-        elif x == 'gen':
-            print("#ofGeneration={0}".format(g_game._generation))
-        elif x == 'num':
-            print("#ofLife={0}".format(g_game._numLife))
-        sleep(0.01)
-    print("Test done.")
 
 def Serve():
     ns = {}
     ns["stop"] = g_game.stop
     ns["gen"] = lambda : g_game._generation
     ns["num"] = lambda : g_game._numLife
+    ns["grid"] = lambda : str(g_game.grid)
 
     BKserver(comm=g_game.comm, ns=ns).Serve()
-        
+
+    
 #-------------------------------------------------------------
 N = 32 #Size of grid for the game of life
 comm = MPI.COMM_WORLD
@@ -272,7 +180,7 @@ rows_per_proc = N / mpi_size
 if(rows_per_proc != int(N*1.0 / mpi_size)):
     if(comm.Get_rank() == 0):
         print("Matrix size not evenly divisible by number of processors."
-                  + " Use different values.")
+              + " Use different values.")
         exit()
 elif(mpi_size > 1):
     if(comm.Get_rank() == 0):
@@ -288,18 +196,23 @@ g_game = game
 game.grid = comm.bcast(game.grid, root=0)
 game.aug_grid = game.form_aug_grid(game.grid)
 rank = comm.Get_rank()
-#if(game.mpi_size > 1):
-#    print(rank, game.proc_grid)
 
 # Start service
 if rank == 0:
-    pool = ThreadPoolExecutor(max_workers=1)
-    pool.submit(Serve)
+    t1 = threading.Thread(target=Serve)
+    t1.start()
 
 # Run simulation
-if(mpi_size == 1):
-    game.movie()
-else:
-    game.movie_para()
+while True:
+    if mpi_size < 2:
+        game.update(game._generation)
+    else:
+        game.update_para_1d_dec_point_to_point(game._generation)
+    sleep(0.1)
+    
+    game.comm_stat()
+    if not game._go:
+        break
+    continue # end of while
 
-
+exit(0)

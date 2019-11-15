@@ -38,7 +38,7 @@ class BKserver():
         def flush(self):
             pass
 
-    def __init__(self, comm, ns, prefix=None, inline_matplotlib=True):
+    def __init__(self, comm, ns, prefix=None):
         self.comm = comm
         self.rank = comm.Get_rank()
         self.nprocs = comm.Get_size()
@@ -54,28 +54,24 @@ class BKserver():
         else:
             self.client_stdout = self.NullFile()
             self.client_stderr = self.NullFile()
-
+            
         if prefix is not None:
             self.prefix = prefix
         else:
             self.prefix = "%s_%s_%s" % (self.exec_name, self.localhost,
-                                            re.sub(r"\W", "_", self.start_time))
+                                        re.sub(r"\W", "_", self.start_time))
 
         self.config_file = os.path.join(self.config_dir,
-                                            "{}.json".format(self.prefix))
+                                        "{}.json".format(self.prefix))
         self.addr = os.path.join(self.config_dir,
-                                     "{}-ipc".format(self.prefix))
+                                 "{}-ipc".format(self.prefix))
 
         if self.rank == 0:
             if not os.path.exists(self.config_dir):
                 os.makedirs(self.config_dir)
 
-        ns["quit"] = self._quitter
-        ns["exit"] = self._quitter
-        ns["image"] = self._write_bytes_image
+        #ns["exit"] = self._quitter
 
-        if inline_matplotlib:
-            self._setup_matplotlib()
 
     def _quitter(self):
         self.go = False
@@ -91,36 +87,6 @@ class BKserver():
         finally:
             sys.stdout = stdout
             sys.stderr = stderr
-
-    def _write_bytes_image(self, data, fmt):
-        if self.rank == 0:
-            self.writemsg({
-                "type": "display",
-                "module": "IPython.display",
-                "attr": "Image",
-                "args": {"data": encodebytes(data).decode("utf-8"),
-                         "format": fmt},
-                # request that the "data" key in "args" be decoded
-                "decode_bytes": ["data"]
-            })
-
-    def _setup_matplotlib(self):
-        import matplotlib
-        #matplotlib.use("agg")
-        from matplotlib import pyplot
-
-        if self.rank == 0:
-            def write_image(*args, **kwargs):
-                print(repr(pyplot.gcf()))
-                bio = BytesIO()
-                pyplot.savefig(bio, format="png")
-                bio.seek(0)
-                self._write_bytes_image(bio.read(),"png","[matplotlib plot]\n")
-                pyplot.close()
-            pyplot._show = write_image
-        else:
-            pyplot.show = lambda *args, **kwargs: None
-            pyplot.show_if_interactive = pyplot.show
 
     def readmsg(self):
         try:
@@ -187,8 +153,7 @@ class BKserver():
     def execute(self, code):
         with self._redirect():
             if self.rank == 0:
-                self.log("command> {}\n".format(code))
-
+                self.log("py> {}\n".format(code))
             try:
                 resp = eval(code, self.ns)
                 if resp is not None:
@@ -199,7 +164,6 @@ class BKserver():
                     resp = None
                 except Exception as e:
                     resp = str(e)
-
             if self.rank == 0 and resp is not None and len(resp) > 0:
                 try:
                     resp = resp + "\n"
@@ -207,9 +171,8 @@ class BKserver():
                 except UnicodeDecodeError:
                     self.log("<cannot display, non-ascii>\n")
                 self.writemsg({"type": "stdout", "code": resp})
-
-                if resp == 'STOP':
-                    self.go = False
+                if resp.startswith('STOP'):
+                    self._quitter()
 
     def complete(self, text, cursor_pos=None):
         if self.rank == 0:
@@ -217,8 +180,6 @@ class BKserver():
                 cursor_pos = len(text)
             cursor_start = 0
             for i in range(cursor_pos - 1, -1, -1):
-                # only works in python3
-                # if text[i].isidentifier() or text[i] == ".":
                 if text[i].isalpha() or text[i].isnumeric() \
                    or text[i] == "_" or text[i] == ".":
                     pass
@@ -244,6 +205,16 @@ class BKserver():
                 "cursor_end": cursor_pos,
                 "matches": [m[0:-1] if m[-1] == "(" else m for m in matches]
             })
+
+    def _remove_files(self):
+        if self.files is not None:
+            while len(self.files) > 0:
+                f = self.files.pop()
+                if os.path.exists(f):
+                    print("removing {}".format(f))
+                    os.remove(f)
+
+
 
     def Serve(self):
         if self.rank == 0:
@@ -293,26 +264,24 @@ class BKserver():
 
         #---------------- event loop ----------------
         while self.go:
-            if self.rank == 0:
-                data = self.readmsg()
-            else:
-                data = None
-
+            data = self.readmsg()
             if data is None:
                 print("disconnected")
                 break
 
             if data["type"] == "execute":
                 self.execute(data["code"])
+                if not self.go: break
             elif data["type"] == "complete":
                 self.complete(data["code"], cursor_pos=data["cursor_pos"])
             elif data["type"] == "disconnect":
                 break # goto epilogue
 
-            if self.rank == 0:
-                self.writemsg({"type": "idle"})
+            self.writemsg({"type": "idle"})
             continue # end of while(self.go)
 
         #---------------- epilogue ----------------
-        if self.rank == 0:
-            self._remove_files()
+        eval("stop()", self.ns)
+        self._quitter()
+        self._remove_files()
+        
